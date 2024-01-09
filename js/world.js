@@ -20,6 +20,9 @@ class World {
     this.roadBoarders = [];
     this.buildings = [];
     this.trees = [];
+    this.laneGuides = [];
+
+    this.markings = [];
 
     this.generate();
   }
@@ -34,12 +37,29 @@ class World {
     this.roadBoarders = Polygon.union(this.envelopes.map((e) => e.poly));
     this.buildings = this.#generateBuildings();
     this.trees = this.#generateTrees();
+
+    this.laneGuides.length = 0;
+
+    this.laneGuides.push(...this.#generateLaneGuides());
   }
 
-  #generateTrees(count = 10) {
+  #generateLaneGuides() {
+    const tmpEnvelopes = [];
+    for (const seg of this.graph.segments) {
+      tmpEnvelopes.push(
+        new Envelope(seg, this.roadWidth / 2, this.roadRoudness)
+      );
+    }
+
+    const segments = Polygon.union(tmpEnvelopes.map((e) => e.poly));
+
+    return segments;
+  }
+
+  #generateTrees() {
     const points = [
       ...this.roadBoarders.map((s) => [s.p1, s.p2]).flat(),
-      ...this.buildings.map((b) => b.points).flat(),
+      ...this.buildings.map((b) => b.base.points).flat(),
     ];
     const left = Math.min(...points.map((p) => p.x));
     const right = Math.max(...points.map((p) => p.x));
@@ -47,13 +67,13 @@ class World {
     const bottom = Math.max(...points.map((p) => p.y));
 
     const illegalPolys = [
-      ...this.buildings,
+      ...this.buildings.map((b) => b.base),
       ...this.envelopes.map((e) => e.poly),
     ];
 
     const trees = [];
-
-    while (trees.length < count) {
+    let tryCount = 0;
+    while (tryCount < 100) {
       const p = new Point(
         lerp(left, right, Math.random()),
         lerp(top, bottom, Math.random())
@@ -70,6 +90,7 @@ class World {
       //     }
       //   }
 
+      // check if tree is inside or near a building / road
       let keep = illegalPolys.every(
         (poly) =>
           !poly.containsPoint(p) && poly.distanceToPoint(p) >= this.treeSize / 2
@@ -78,16 +99,30 @@ class World {
       // check if too close to other trees
       if (keep) {
         for (const tree of trees) {
-          if (distance(tree, p) < this.treeSize) {
+          if (distance(tree.center, p) < this.treeSize) {
             keep = false;
             break;
           }
         }
       }
 
+      // avoid trees in the middle of nowhere
       if (keep) {
-        trees.push(p);
+        let closeToSomething = false;
+        for (const poly of illegalPolys) {
+          if (poly.distanceToPoint(p) < this.treeSize * 2) {
+            closeToSomething = true;
+            break;
+          }
+        }
+        keep = closeToSomething;
       }
+
+      if (keep) {
+        trees.push(new Tree(p, this.treeSize));
+        tryCount = 0;
+      }
+      tryCount++;
     }
 
     return trees;
@@ -145,21 +180,28 @@ class World {
       bases.push(new Envelope(seg, this.buildingWidth).poly);
     }
 
+    const eps = 0.0001;
     for (let i = 0; i < bases.length; i++) {
       for (let j = i + 1; j < bases.length; j++) {
-        if (bases[i].intersectsPoly(bases[j])) {
+        if (
+          bases[i].intersectsPoly(bases[j]) ||
+          bases[i].distanceToPoly(bases[j]) < this.spacing - eps
+        ) {
           bases.splice(j, 1);
           j--;
         }
       }
     }
 
-    return bases;
+    return bases.map((b) => new Building(b));
   }
 
-  draw(ctx) {
+  draw(ctx, viewPoint) {
     for (const env of this.envelopes) {
       env.draw(ctx, { fill: "#BBB", stroke: "#BBB", lineWidth: 15 });
+    }
+    for (const marking of this.markings) {
+      marking.draw(ctx);
     }
     for (const seg of this.graph.segments) {
       seg.draw(ctx, { color: "white", width: 4, dash: [10, 10] });
@@ -167,11 +209,14 @@ class World {
     for (const seg of this.roadBoarders) {
       seg.draw(ctx, { color: "white", width: 4 });
     }
-    for (const tree of this.trees) {
-      tree.draw(ctx, { size: this.treeSize, color: "rgba(0,0,0,0.5)" });
-    }
-    for (const building of this.buildings) {
-      building.draw(ctx);
+
+    const items = [...this.buildings, ...this.trees];
+    items.sort(
+      (a, b) =>
+        b.base.distanceToPoint(viewPoint) - a.base.distanceToPoint(viewPoint)
+    );
+    for (const item of items) {
+      item.draw(ctx, viewPoint);
     }
   }
 }
